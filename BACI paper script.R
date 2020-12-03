@@ -20,14 +20,18 @@ library(sjPlot)
 library(sem)
 library(rstanarm)
 library(lsmeans)
+library(emmeans)
 library(egg)
 library(cowplot)
-library(grid)
+library(car)
+library(DHARMa)
+
 
 ################### EXPLORATORY DATA ANALYSIS ###############
 # general questions:
 ######## 1) how has biomass changed over time (per species)?##########
 
+setwd("~/Desktop/Urchin Files/Urchin Files")
 #load in annual kelp stipe counts
 kelp <- read.csv("Annual_Kelp_Mean_Stipe_Density.csv")
 kelp <- kelp[2:7]
@@ -250,10 +254,20 @@ summary(m5)
 #Log transform biomass for residuals
 m6 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~Urchin|site_id, data=baci.data)
 summary(m6)
+m6_update <- update(m6, correlation=corAR1())
 #calculate transformed parameter
 exp(.625811)-1
 qqPlot(residuals(m6)) # this looks normal enough
 plot(m6) 
+durbinWatsonTest(residuals(m6)) #error: requires a vector of residuals
+plot(ACF(m6))
+pacf(residuals(m6))
+plot(ACF(m6_update))
+plot(m6_update)
+pacf(residuals(m6_update))
+summary(m6_update)
+#DHARMa::plot(m6) # error: plot is not an exported object - this is for GLMMs specifically
+
 
 #estimated marginal means
 em1 <- emmeans(m6, pairwise ~ site.class|pre.post)
@@ -322,7 +336,9 @@ m.purple2 <- lme(av.total.biomass ~ pre.post + site.class + site.class*pre.post,
 anova(m.purple, m.purple2)
 summary(m.purple2)
 #no significant terms
-
+m.purple3 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~1|site_id, cor=corAR1(),data=purple.baci)
+plot(residuals(m.purple3))
+summary(m.purple3)
 #model diagnostics
 residuals.p <- resid(m.purple2)
 plot(m.purple2, main="Purple BACI Residuals")
@@ -472,7 +488,7 @@ ggplot(avs.plot, aes(x=Year, y=average.biomass, color=Urchin)) +
 kelp.urchins <- merge(question1data, kelp, by=c("site_id","Year", "time.reserve", "reserve.status"))
 head(kelp.urchins)
 
-kelp.urchins <- kelp.urchins[c(1:6,18,21:22)]
+kelp.urchins <- kelp.urchins[c(1:7,15,21:22)]
 kelp.urchins1 <- spread(kelp.urchins, key=Urchin, value=av.total.biomass)
 head(kelp.urchins1)
 
@@ -499,6 +515,14 @@ dev.off()
 
 kelp.m1 <- lme(mean_stipe ~ pre.post + reserve.status + reserve.status*pre.post, random=~1|site_id, data=kelp.baci.data2)
 summary(kelp.m1)
+plot(kelp.m1)
+kelp.m2 <- lme(log(mean_stipe+1) ~ pre.post + reserve.status + reserve.status*pre.post, random=~1|site_id, data=kelp.baci.data2)
+plot(kelp.m2)
+#maybe some issues with this - cone and spread
+kelp.m3 <- lme(log(mean_stipe+1) ~ pre.post + reserve.status + reserve.status*pre.post, random=~1|site_id, cor=corAR1(), data=kelp.baci.data2)
+plot(kelp.m3)
+summary(kelp.m3)
+
 means <- lsmeans(m6,~pre.post*site.class)
 means
 car::Anova(m6)
@@ -904,31 +928,46 @@ ggplot(data=small,aes(x=Year,y=biomass.in.class, color=Urchin, group=interaction
 dev.off()
 
 #mixed effects model- all juveniles
-m.juv <- lme(biomass.in.class ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id, data=juvenile)
+m.juv <- lme(biomass.in.class ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id, data=small)
 summary(m.juv)
 plot(m.juv)
-#interaction term is significant (p=0.005), value is positive
+m.juv2 <- lme(log(biomass.in.class+1) ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id, data=small)
+summary(m.juv2)
+plot(m.juv2)
+#interaction term is significant (p=0.0352), value is positive
+pacf(residuals(m.juv2))
+acf(residuals(m.juv2))
+m.juv3 <- lme(log(biomass.in.class+1) ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id, cor=corAR1(),data=small)
+summary(m.juv3)
+plot(m.juv3)
+
 
 #mixed effects model - red juveniles
-juv.red <- subset(juvenile, Urchin=="red")
+juv.red <- subset(small, Urchin=="red")
 head(juv.red)
 m.juv.red <- lme(biomass.in.class ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=juv.red)
 summary(m.juv.red)
 plot(m.juv.red)
-# interaction term is significant (p=0.0042), value is positive
+m.juv.red2 <- lme(log(biomass.in.class+1.5) ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=juv.red)
+summary(m.juv.red2)
+plot(m.juv.red2)
+# interaction term is significant (p=0.0444), value is positive
 
 #mixed effects model - purple juveniles
-juv.purple <- subset(juvenile, Urchin=="purple")
+juv.purple <- subset(small, Urchin=="purple")
 head(juv.purple)
 m.juv.purple <- lme(biomass.in.class ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=juv.purple)
 summary(m.juv.purple)
-#interaction term is not significant, but pre.post is (p=0.0483)
-#run without interaction
-m.juv.purple2 <- lme(biomass.in.class ~ pre.post + site.class, random=~1|site_id, data=juv.purple)
+plot(m.juv.purple)
+m.juv.purple2 <- lme(log(biomass.in.class+1) ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=juv.purple)
 summary(m.juv.purple2)
-#neither term is significant
-#biomass occupied by purple urchins is not significantly different inside/outside or before/after
+plot(m.juv.purple2)
 
+#interaction term is not significant, but pre.post is (p=0.0014)
+#run without interaction
+m.juv.purple3 <- lme(log(biomass.in.class+1) ~ pre.post + site.class, random=~1|site_id, data=juv.purple)
+summary(m.juv.purple3)
+plot(m.juv.purple3)
 
 # size distributions for sites 1-16
 site1 <- subset(size, site_id==1)
