@@ -31,13 +31,7 @@ library(DHARMa)
 # general questions:
 ######## 1) how has biomass changed over time (per species)?##########
 
-setwd("~/Desktop/Urchin Files/Urchin Files")
-#load in annual kelp stipe counts
-kelp <- read.csv("Annual_Kelp_Mean_Stipe_Density.csv")
-kelp <- kelp[2:7]
-str(kelp)
-kelp$site_id <- as.factor(kelp$site_id)
-kelp$pre.post <- as.factor(kelp$pre.post)
+setwd("~/Desktop")
 
 #load in biomass dataset (1991-2019)
 question1data <- read.csv("Biomass_1991_2019.csv")
@@ -48,7 +42,8 @@ summary(question1data)
 
 #remove sites 17,18,19, and 20 (San Clemente Island)
 question1data <- question1data[question1data$site_id != "17" & question1data$site_id != "18" & question1data$site_id != "19" & question1data$site_id != "20",]
-#add in SD for av.total.biomass
+#add in SD for av.total.biomass (for error bars in figures - ultimately removed
+#to avoid clutter)
 xbar <- question1data$av.count.m2
 zbar <- question1data$av.wetmass
 N <- question1data$Nquads
@@ -248,49 +243,46 @@ summary(m4)
 #include urchin
 m5 <- lme(av.total.biomass ~ Urchin + pre.post + site.class + site.class*pre.post, random=~1|site_id, data=baci.data)
 summary(m5)
+qqPlot(residuals(m5))
 
 
-### Final full model
+### Final full model - repeated measures ANOVA
 #Log transform biomass for residuals
 m6 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~Urchin|site_id, data=baci.data)
 summary(m6)
-m6_update <- update(m6, correlation=corAR1())
-#calculate transformed parameter
-exp(.625811)-1
 qqPlot(residuals(m6)) # this looks normal enough
 plot(m6) 
-durbinWatsonTest(residuals(m6)) #error: requires a vector of residuals
-plot(ACF(m6))
+#calculate transformed covariate
+exp(m6$coefficients$fixed[4]) -1
 pacf(residuals(m6))
-plot(ACF(m6_update))
-plot(m6_update)
-pacf(residuals(m6_update))
-summary(m6_update)
-#DHARMa::plot(m6) # error: plot is not an exported object - this is for GLMMs specifically
 
-
-#estimated marginal means
-em1 <- emmeans(m6, pairwise ~ site.class|pre.post)
-contrast(em1[[1]], "poly") 
-em2 <- emmeans(m6, ~site.class*pre.post)
-contrast(em2, "consec", simple = "each", combine = TRUE, adjust = "mvt")
-
-#GLMMs
-m7 <- glmer(av.total.biomass +1 ~ pre.post + site.class + site.class*pre.post + (1|site_id), data=baci.data, family=quasipoisson)
-m8 <- lme(log(av.total.biomass + 1) ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id, data=baci.data)
-plot(m8)
-summary(m8)
-Anova(m8)
-temp <- summary(m6)$coefficients # get all the coefficients
-temp[grepl("site.class",rownames(temp)) & grepl("pre.post", rownames(temp)),]
+##BACI with year and site as random effects
+m7 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~Urchin|Year/site_id, data=baci.data)
+pacf(residuals(m7)) #short lags 0-1
+m7_update <- update(m7, correlation=corAR1())
+plot(m7)
+qqPlot(residuals(m7))
+plot(m7_update)
+qqPlot(residuals(m7_update))
 
 # calculate percent increase in average urchin biomass
-baci.data %>%
+tot.sum <- baci.data %>%
   group_by(pre.post,site.class) %>%
   summarize(overall.mean= mean(av.total.biomass))
-diff.control = 188-252
-diff.impact = 367-240
-(diff.impact - diff.control)/abs(diff.control)
+tot.sum <- as.data.frame(tot.sum)
+diff.control = tot.sum[3,3]-tot.sum[1,3]
+diff.impact = tot.sum[4,3] -tot.sum[2,3]
+((diff.impact - diff.control)/abs(diff.control))*100
+
+#another way of doing this, estimated means from lsmeans
+final.model <- m7_update
+final.model.noIntercept <- update(m7_update, . ~ . -1)
+estimates <- lsmeans::lsmeans(final.model.noIntercept, ~ site.class:pre.post, type = "response")
+#baci effect, from Schwarz (2015)
+est <- predict(ref.grid(final.model.noIntercept), type = "response") # get the estimates only (without CI)
+names(est) <- c("CB","IB","CA","IA"); est # give names to the estimates vector
+baci <- est["CA"]-est["CB"]-(est["IA"]-est["IB"])
+baci #large and negative -110.2565 - urchins overall decreased at control (fished) sites and increased at impact (reserve) sites
 
 ## two separate models, one for each species
 red.baci <- subset(baci.data, Urchin=="red")
@@ -299,8 +291,8 @@ purple.baci <- subset(baci.data, Urchin=="purple")
 ### Modelling Red Urchin BACI
 m.red <- lme(av.total.biomass ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=red.baci)
 summary(m.red)
-#add in temporal autocorrelation
-m.red2 <- lme(av.total.biomass ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, cor=corAR1(),data=red.baci)
+#add in temporal autocorrelation and year into error structure
+m.red2 <- lme(av.total.biomass ~ pre.post + site.class + site.class*pre.post, random=~1|Year/site_id, cor=corAR1(),data=red.baci)
 plot(m.red2)
 anova(m.red, m.red2)
 summary(m.red2)
@@ -311,22 +303,31 @@ plot(m.red2, main="Red BACI Residuals")
 qqnorm(residuals)
 qqline(residuals)
 # log transform
-m.red.3 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~1|site_id, cor=corAR1(),data=red.baci)
+m.red.3 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~1|Year/site_id, cor=corAR1(),data=red.baci)
 plot(residuals(m.red.3))
+qqPlot(residuals(m.red.3))
 summary(m.red.3)
-emmeans(m.red.3, pairwise ~ site.class|pre.post)
 
 #BACI contrast
-car::Anova(m.red2)
-means.red <- lsmeans(m.red2,~pre.post*site.class)
-means.red
-
 summary.red <- red.baci %>%
   group_by(pre.post,site.class) %>%
   summarize(red.mean= mean(av.total.biomass))
-diff.control = 243.3624-332.6819
-diff.impact = 561.8019-296.0048
-(diff.impact - diff.control)/abs(diff.control)
+summary.red <- as.data.frame(summary.red)
+diff.control = summary.red[3,3]-summary.red[1,3]
+diff.impact = summary.red[4,3] -summary.red[2,3]
+diff.control - diff.impact #BACI contrast
+((diff.impact - diff.control)/abs(diff.control))*100 #percent change in red urchins
+
+#same thing, using lsmeans
+final.model1 <- m.red.3
+final.model.noIntercept1 <- update(m.red.3, . ~ . -1)
+estimates <- lsmeans::lsmeans(final.model.noIntercept, ~ site.class:pre.post, type = "response")
+#baci effect, from Schwarz (2015)
+est1 <- predict(ref.grid(final.model.noIntercept1), type = "response") # get the estimates only (without CI)
+names(est1) <- c("CB","IB","CA","IA"); est # give names to the estimates vector
+baci.red1 <- est1["CA"]-est1["CB"]-(est1["IA"]-est1["IB"])
+baci.red1 #large and negative -172.2706 - red urchins decreased at control (fished) sites and increased at impact (reserve) sites
+
 
 #### Modelling Purple Urchin BACI
 m.purple<- lme(av.total.biomass ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=purple.baci)
@@ -335,23 +336,34 @@ summary(m.purple)
 m.purple2 <- lme(av.total.biomass ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, cor=corAR1(),data=purple.baci)
 anova(m.purple, m.purple2)
 summary(m.purple2)
+plot(m.purple2)
 #no significant terms
-m.purple3 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~1|site_id, cor=corAR1(),data=purple.baci)
-plot(residuals(m.purple3))
-summary(m.purple3)
 #model diagnostics
 residuals.p <- resid(m.purple2)
 plot(m.purple2, main="Purple BACI Residuals")
 qqnorm(residuals.p)
 qqline(residuals.p)
 #skewed tails and cone-shaped residuals
-m.purple3 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~1|site_id, cor=corAR1(),data=purple.baci)
-plot(residuals(m.purple3))
-qqPlot(residuals(m.purple3))
-hist(residuals(m.purple3))
+
+#log transform and add in temporal autocorrelation, year in error structure
+m.purple3 <- lme(log(av.total.biomass+1) ~ site.class*pre.post, random=~1|Year/site_id, cor=corAR1(),data=purple.baci)
 summary(m.purple3)
 
-#subset for slopes
+#model diagnostics
+plot(residuals(m.purple3))
+qqPlot(residuals(m.purple3))
+hist(residuals(m.purple3)) #slight right skew
+#since no BACI effect for purples, no BACI contrast calculated for purples
+#but for demonstration purposes...
+final.model2 <- m.purple3
+final.model.noIntercept2 <- update(m.purple3, . ~ . -1)
+estimates <- lsmeans::lsmeans(final.model.noIntercept2, ~ site.class:pre.post, type = "response")
+est2 <- predict(ref.grid(final.model.noIntercept2), type = "response") # get the estimates only (without CI)
+names(est2) <- c("CB","IB","CA","IA"); est # give names to the estimates vector
+baci.purple1 <- est2["CA"]-est2["CB"]-(est2["IA"]-est2["IB"])
+baci.purple1 #small negative value (slight decrease at control sites and impact sites)
+
+#subset to see slopes for each site (visualized on fig 3)
 pre.2004 <- subset(baci.data, pre.post==0)
 head(pre.2004)
 post.2004 <- subset(baci.data, pre.post==1)
@@ -485,10 +497,20 @@ ggplot(avs.plot, aes(x=Year, y=average.biomass, color=Urchin)) +
 
 
 ###### Kelp vs Urchin Biomass #######
+#load in annual kelp stipe counts
+kelp <- read.csv("Annual_Kelp_Mean_Stipe_Density.csv")
+kelp <- kelp[2:7] #get rid of "X" column
+str(kelp)
+#make sure site and time period are factors
+kelp$site_id <- as.factor(kelp$site_id)
+kelp$pre.post <- as.factor(kelp$pre.post)
+#merge kelp values with urchin data
 kelp.urchins <- merge(question1data, kelp, by=c("site_id","Year", "time.reserve", "reserve.status"))
 head(kelp.urchins)
 
+#keep the imortant columns for analyzing kelp vs urchin biomass
 kelp.urchins <- kelp.urchins[c(1:7,15,21:22)]
+#spread urchins into two columns so each year*site combo has reds, purples, and kelp
 kelp.urchins1 <- spread(kelp.urchins, key=Urchin, value=av.total.biomass)
 head(kelp.urchins1)
 
@@ -513,21 +535,30 @@ dev.off()
 
 ### Kelp BACI 
 
+#start with simplest version
 kelp.m1 <- lme(mean_stipe ~ pre.post + reserve.status + reserve.status*pre.post, random=~1|site_id, data=kelp.baci.data2)
 summary(kelp.m1)
-plot(kelp.m1)
+plot(kelp.m1) #issues here with clustering - try log
 kelp.m2 <- lme(log(mean_stipe+1) ~ pre.post + reserve.status + reserve.status*pre.post, random=~1|site_id, data=kelp.baci.data2)
 plot(kelp.m2)
 #maybe some issues with this - cone and spread
+#try temporal autocorrelation
 kelp.m3 <- lme(log(mean_stipe+1) ~ pre.post + reserve.status + reserve.status*pre.post, random=~1|site_id, cor=corAR1(), data=kelp.baci.data2)
 plot(kelp.m3)
 summary(kelp.m3)
-
-means <- lsmeans(m6,~pre.post*site.class)
-means
-car::Anova(m6)
-means.int <- lsmeans(m6, specs = c("pre.post", "site.class"))
-means.int
+Anova(kelp.m3)
+#no significant terms
+#model with Year in error structure does not converge
+#kelp.m4 <- lme(log(mean_stipe+1) ~ pre.post + reserve.status + reserve.status*pre.post, random=~1|Year/site_id, cor=corAR1(), data=kelp.baci.data2)
+#no BACI contrast:
+final.model.k <- kelp.m3
+final.model.noIntercept.k <- update(kelp.m3, . ~ . -1)
+estimates <- lsmeans::lsmeans(final.model.noIntercept.k, ~ reserve.status:pre.post, type = "response")
+#baci effect, from Schwarz (2015)
+est.k <- predict(ref.grid(final.model.noIntercept.k), type = "response") # get the estimates only (without CI)
+names(est.k) <- c("CB","IB","CA","IA"); est # give names to the estimates vector
+baci.kelp <- est.k["CA"]-est.k["CB"]-(est.k["IA"]-est.k["IB"])
+baci.kelp #very small and positive: 0.291.  slight decrease in kelp in controls and increase in reserves
 
 #kelp density by urchin biomass
 ggplot(data=kelp.urchins,aes(x=av.total.biomass,y=mean_stipe, group=Urchin)) +
@@ -566,14 +597,14 @@ dev.off()
 #no strong relationship between urchin biomass and kelp stipe density
 
 #### Predators BACI ####
+#raw data from MBON
 pred<- read.csv("SBCMBON_kelp_forest_integrated_fish_20181129.csv")
 sheephead <- subset(pred, taxon_name=="Semicossyphus pulcher" & data_source=="kfm" & sample_method=="visualfish")
 head(sheephead)
 sheephead$Year <- year(sheephead$date)
-baci.data <- read.csv("BACI DATA.csv")
-head(baci.data)
-baci.data <- baci.data[-1]
 
+
+#check sheephead dataset
 str(sheephead)
 sheephead$site_name <- as.numeric(sheephead$site_name)
 sheephead.16 <- subset (sheephead, site_name < 17)
@@ -581,25 +612,33 @@ ggplot(sheephead.16, aes(y=count, x=Year)) +
   geom_bar(stat="identity") +
   labs(y="Total Sheephead Count") +
   facet_wrap(~site_name)
+
+#isolate the 4 sites that became marine reserves (impact sites)
 baci.sheephead <- subset(sheephead,site_name==2 | site_name==6 | site_name==9 | site_name==14)
+#show sheephead counts in these 4 sites
 ggplot(baci.sheephead, aes(y=count, x=Year)) +
   geom_bar(stat="identity") +
   labs(y="Total Sheephead Count") +
   facet_wrap(~site_name) +
   theme_classic()
 
+#lobster and pyncopodia counts from MBON.  no conversion to biomass because
+#lacking size info
 predators <- read.csv("lobster_pycnopodia.csv")
 head(predators)
+#create dataframe of total and average counts by year*site
 annual <- group_by(predators, taxa_id, Year, site_id)
 predators1 <- as.data.frame(summarize(annual, total.count=sum(count), av.count=mean(count), sd.count=sd(count)))
 summary(predators1)
 str(predators1)
 predators1$site_id <- as.factor(predators1$site_id)
+#select the 4 sites that became reserves
 bacisites <- subset(predators1,site_id=="2" | site_id=="6" | site_id=="9" | site_id=="14")
 head(bacisites)
 str(bacisites)
 summary(bacisites)
-#remove outlier
+#remove outliers (extremely high counts of pycnopodia - not sure if these
+#are true outliers or an irregularity)
 outlier <- subset(bacisites, total.count>100)
 print(outlier)
 
@@ -611,18 +650,21 @@ ggplot(bacisites, aes(x=Year, y=total.count, fill=taxa_id)) +
   theme_classic() +
   theme(legend.position = c(0.85, 0.3))
 
-#merge files.  BACI analysis
+#merge files.  consider BACI analysis
 head(predators1)
 head(sheephead)
+#select matching columns, get rid of rest
 sheephead1 <- sheephead[c(10:12,15:16,18:20)]
 head(sheephead1)
+#annual sheephead counts (total and average)
 annual.sh <- group_by(sheephead1, Year, site_name, taxon_name, latitude, longitude)
 sh1 <- as.data.frame(summarize(annual.sh, total.count=sum(count), sd.count=sd(count), av.count=mean(count)))
 head(sh1)
 names(sh1) <- c("Year", "site_id", "taxa_id", "latitude", "longitude", "total.count", "sd.count", "av.count")
 str(sh1)
 sh1$site_id <- as.factor(sh1$site_id)
-head(predators1)
+
+#merge both predator datasets
 all.preds <- merge(sh1, predators1, by=c("Year","site_id"))
 head(all.preds)
 summary(all.preds)
@@ -635,7 +677,9 @@ head(baci.data)
 all.orgs <- merge(all.preds, baci.data, by=c("site_id","Year"))
 head(all.orgs)
 summary(all.orgs)
+#remove anacapa
 all.orgs <- all.orgs[all.orgs$site_id != "12" & all.orgs$site_id != "13",]
+#add column for control and impact
 for(i in 1:nrow(all.orgs)){
   if(all.orgs$site_id[i]=="2" | all.orgs$site_id[i]=="6" | all.orgs$site_id[i]=="9" | all.orgs$site_id[i]=="14"){
     all.orgs$site.class[i]<-"Impact"
@@ -647,20 +691,12 @@ for(i in 1:nrow(all.orgs)){
 head(all.orgs)
 all.orgs$pre.post <- as.factor(all.orgs$pre.post)
 
+#reorder so impact sites print first
 levels(all.orgs$Name)
 neworder <- c("Gull Island","Hare Rock","Scorpion Anchorage","SE Sea Lion Rookery","Admiral's Reef","Cat Canyon","Fry's Harbor","Arch Point","Johnson's Lee North","Johnson's Lee South","Rodes Reef","Pelican Bay ","Wycoff Ledge","Yellow Banks")
 all.orgs2 <- arrange(mutate(all.orgs, Name=factor(Name, levels=neworder)),Name)
 head(all.orgs2)
 
-#EDA all predators
-ggplot(data=all.orgs,aes(x=Year,y=total.count.invert, color=taxa_id.y, group=interaction(taxa_id.y, pre.post))) +
-  geom_point(shape=20) +
-  geom_smooth(method="lm", size=0.5) + 
-  labs(y="Total Count") +
-  facet_wrap(~site_id) +
-  geom_vline(xintercept=2004) +
-  theme_classic() +
-  theme(legend.position = c(0.75, 0.1))
 
 #EDA lobster and pycnopodia 
 ggplot(data=all.orgs2,aes(x=Year,y=total.count.invert, color=taxa_id.y, group=interaction(taxa_id.y, pre.post))) +
@@ -720,7 +756,7 @@ ggplot(data=all.orgs2,aes(x=Year,y=total.count.sh, group=pre.post)) +
 dev.off()
 str(all.orgs2)
 
-#Example - Site 4 and 5 with urchins
+#Example - Site 4 and 5
 p1 <- ggplot(data=all.orgs2[all.orgs2$site_id=="4",],aes(x=Year,y=total.count.sh, group=pre.post)) +
   geom_point(shape=20) +
   geom_smooth(method="lm", size=0.5) + 
@@ -742,29 +778,27 @@ bacimodel.sh <- lme(log(total.count.sh +1) ~ pre.post + site.class + site.class*
 summary(bacimodel.sh)
 #time period is significant but the site class is not, nor is the interaction 
 #between site class and time period.
-head(all.orgs)
+
 sheephead2 <- subset(all.orgs, taxa_id.x=="Semicossyphus pulcher")
 head(sheephead2)
 sheephead2 <- sheephead2[c(1:2,6:8,31:32)]
 str(sheephead2)
-#find means
+#find means and demonstrate contrast is small (not significant)
 means.sh <- lsmeans(bacimodel.sh, ~pre.post*site.class)
 means.sh
 car::Anova(bacimodel.sh)
-
-means.int <- lsmeans(bacimodel.sh, specs = c("pre.post", "site.class"))
-means.int
-#contrast(means.sh, list(site.class=levels(means.sh$site.class), pre.post="0"), list(site.class=levels(means.sh$site.class), pre.post="1"), type="average")
 1.152-1.854 #difference for control sites
 0.917-1.847 #difference for impact sites
 -0.702-(-0.93) #difference of differences
 
 #### Size Classes over time #####
+#going back to older version of biomass doc with individual sizes still listed
 size <- read.csv("KFM_Raw_Biomass_Edited2.csv")
 head(size)
 summary(size)
 
 str(size)
+#original test: size groupings based off of visual inspection of the data
 for(i in 1:nrow(size)){
   if(size$Size_mm[i] < 82){
     size$size_class[i] <- "juvenile"
@@ -807,6 +841,7 @@ red.size.chsq
 chisq.test(red.size.chsq)
 
 ### BACI for reds
+#apporach 1: get annual values for frequency
 freq.red <- red.size %>%
   count(Year, site_id,size_class) %>%
   group_by(Year, site_id) %>%
@@ -820,6 +855,7 @@ head(red.size2)
 freq.red2 <- merge(freq.red, red.size2, by=c("Year","site_id","size_class","n"))
 head(freq.red2)
 
+#approach 2:
 #change size class groupings
 size2 <- read.csv("KFM_Raw_Biomass_Edited2.csv")
 str(size2)
@@ -841,6 +877,7 @@ for(i in 1:nrow(size2)){
 head(size2)
 
 size2$size_class <- as.factor(size2$size_class)
+#first, calculate the proportion of individuals in each size class
 summary.size <- size2 %>%
   group_by(size_class, Year, site_id, Urchin) %>%
   summarize (n = n()) %>%
@@ -850,17 +887,23 @@ summary.size <- as.data.frame(summary.size)
 summary(summary.size)
 str(summary.size)
 summary.size$site_id <- as.factor(summary.size$site_id)
-str(baci.data)
+#create a new data frame with annual size frequencies and all the other urchin data
 newdf <- merge(summary.size, baci.data, by=c("Year","site_id","Urchin"))
 head(newdf)
 summary(newdf)
+#calculate the biomass in each class by multiplying the proportion of 
+#individuals in that size class by the average biomass in that site/year
 newdf$biomass.in.class <- newdf$freq * newdf$av.total.biomass
+#choose first 16 sites
 newdf1 <- newdf[newdf$site_id=="1" | newdf$site_id=="2" | newdf$site_id=="3" | newdf$site_id=="4" | newdf$site_id=="5" | newdf$site_id=="6"| newdf$site_id=="7"| newdf$site_id=="8"| newdf$site_id=="9"| newdf$site_id=="10" | newdf$site_id=="11"| newdf$site_id=="12"| newdf$site_id=="13"| newdf$site_id=="14"| newdf$site_id=="15"| newdf$site_id=="16",]
 levels(newdf1$Name)
+#get rid of anacapa
 newdf1 <- newdf1[newdf1$site_id != "12" & newdf1$site_id != "13",]
+#reorder for plots
 neworder <- c("Gull Island","Hare Rock","Scorpion Anchorage","SE Sea Lion Rookery","Admiral's Reef","Cat Canyon","Fry's Harbor","Arch Point","Johnson's Lee North","Johnson's Lee South","Rodes Reef","Pelican Bay ","Wycoff Ledge","Yellow Banks")
 newdf1 <- arrange(mutate(newdf1, Name=factor(Name, levels=neworder)),Name)
 head(newdf1)
+#add in control/impact
 for(i in 1:nrow(newdf1)){
   if(newdf1$site_id[i]=="2" | newdf1$site_id[i]=="6" | newdf1$site_id[i]=="9" | newdf1$site_id[i]=="14"){
     newdf1$site.class[i]<-"Impact"
@@ -910,7 +953,7 @@ ggplot(data=newdf1.purple, aes(fill=`Size class`, y=biomass.in.class, x=Year)) +
         legend.text = element_text(size = 7))
 dev.off()
 
-##### Figure - juvenile BACI ####
+##### Figure - small urchin BACI ####
 
 small <- subset(newdf1, size_class=="small")
 tiff("fig4.tiff", units="in", width=5, height=5, res=300)
@@ -927,49 +970,74 @@ ggplot(data=small,aes(x=Year,y=biomass.in.class, color=Urchin, group=interaction
   theme(strip.text = element_text(size=7))
 dev.off()
 
-#mixed effects model- all juveniles
+#mixed effects model for all small individuals
 m.juv <- lme(biomass.in.class ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id, data=small)
 summary(m.juv)
 plot(m.juv)
+#cone of residuals - take log
 m.juv2 <- lme(log(biomass.in.class+1) ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id, data=small)
 summary(m.juv2)
 plot(m.juv2)
 #interaction term is significant (p=0.0352), value is positive
+#check for lags
 pacf(residuals(m.juv2))
 acf(residuals(m.juv2))
+#short lags
+
+#add in temporal autocorrelation 
 m.juv3 <- lme(log(biomass.in.class+1) ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id, cor=corAR1(),data=small)
 summary(m.juv3)
 plot(m.juv3)
 
+#add in Year in error structure
+m.juv4 <- lme(log(biomass.in.class+1) ~ pre.post + site.class + site.class*pre.post, random=~Urchin|site_id/Year, cor=corAR1(),data=small)
+summary(m.juv4)
+plot(m.juv4)
+qqPlot(residuals(m.juv4))
 
-#mixed effects model - red juveniles
+#mixed effects model - small reds
 juv.red <- subset(small, Urchin=="red")
 head(juv.red)
 m.juv.red <- lme(biomass.in.class ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=juv.red)
 summary(m.juv.red)
 plot(m.juv.red)
+#cone residuals, use log
 m.juv.red2 <- lme(log(biomass.in.class+1.5) ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=juv.red)
 summary(m.juv.red2)
 plot(m.juv.red2)
 # interaction term is significant (p=0.0444), value is positive
+pacf(residuals(m.juv.red2))
+acf(residuals(m.juv.red2))
+#short lag, add in AR(1) and Year in error structure
+m.juv.red3 <- lme(log(biomass.in.class+1.5) ~ pre.post + site.class + site.class*pre.post, random=~1|site_id/Year, cor=corAR1(),data=juv.red)
+summary(m.juv.red3)
 
-#mixed effects model - purple juveniles
+#mixed effects model - small purples
 juv.purple <- subset(small, Urchin=="purple")
 head(juv.purple)
 m.juv.purple <- lme(biomass.in.class ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=juv.purple)
 summary(m.juv.purple)
-plot(m.juv.purple)
+plot(m.juv.purple) #cone - use log
 m.juv.purple2 <- lme(log(biomass.in.class+1) ~ pre.post + site.class + site.class*pre.post, random=~1|site_id, data=juv.purple)
 summary(m.juv.purple2)
 plot(m.juv.purple2)
+qqPlot(residuals(m.juv.purple2))
+pacf(residuals(m.juv.purple2)) #only lag of 1
+acf(residuals(m.juv.purple2))
 
 #interaction term is not significant, but pre.post is (p=0.0014)
 #run without interaction
 m.juv.purple3 <- lme(log(biomass.in.class+1) ~ pre.post + site.class, random=~1|site_id, data=juv.purple)
 summary(m.juv.purple3)
 plot(m.juv.purple3)
+#time period is significant (p=0.0024)
+#add in AR(1) and Year
+m.juv.purple4 <- lme(log(biomass.in.class+1) ~ pre.post + site.class, random=~1|Year/site_id, cor=corAR1(),data=juv.purple)
+summary(m.juv.purple4)
+plot(m.juv.purple4)
+# after adding that in time period loses significance, but barely (p=0.0715)
 
-# size distributions for sites 1-16
+# showing size distributions for sites 1-16
 site1 <- subset(size, site_id==1)
 ggplot(site1, aes(x=Size_mm, fill=Urchin)) +
   geom_histogram() +
@@ -1099,7 +1167,7 @@ ggplot(site16, aes(x=Size_mm, fill=Urchin)) +
   labs(x="Test Diameter (mm)",y="Frequency", title="Site 16")+
   theme_classic()
 
-#repeat for separate red and purple
+#example: repeat for separate red and purple
 red <- subset(size, Urchin=="red")
 purple <- subset(size, Urchin=="purple")
 
@@ -1148,6 +1216,7 @@ ggplot(site6.r, aes(x=Size_mm)) +
 ##### Anacapa sites - analyzed separately (marine reserve since 1978) #####
 anacapa <- question1data[question1data$IslandCode=="AN",]
 anacapa$site_id <- as.factor(anacapa$site_id)
+#old anacapa sites monitored from the beginning
 anacapa.old <- subset(anacapa, site_id=="11" | site_id=="12" | site_id=="13")
 head(anacapa.old)
 for(i in 1:nrow(anacapa.old)){
@@ -1171,18 +1240,25 @@ ggplot(anacapa.old, aes(x=Year, y=av.total.biomass, col=Urchin)) +
   theme(legend.position = c(0.1, 0.87)) +
   theme(axis.text.x = element_text(angle = 90))
 dev.off()
+#in general, reds are decreasing at Anacapa (but site 11 has highest decrease and that is outside the marine reserve)
 
 #model - total urchin biomass over time at anacapa
 anacapalm <- lme(av.total.biomass ~ Year, random=~Urchin|site_id, data=anacapa)
 summary(anacapalm)
-#in general, reds are decreasing at Anacapa (but site 11 has highest decrease and that is outside the marine reserve)
+plot(anacapalm)
+#log transform
+anacapalm2 <- lme(log(av.total.biomass +1) ~ Year, random=~Urchin|site_id, data=anacapa)
+plot(anacapalm2)
+qqPlot(residuals(anacapalm2))
+summary(anacapalm2)
 
-#ANOVA - difference in means between reserve and non reserve site
+#ANOVA - difference in means between reserve and non reserve sites (using all anacapa sites)
 summary(anacapa)
 anova1 <- aov(anacapa$av.total.biomass ~ anacapa$site_id)
 summary(anova1)
 anova2 <- aov(anacapa$av.total.biomass ~ anacapa$reserve.status)
 summary(anova2)
+#significant diff between reserve and non reserve
 
 #need to split up by species
 anacapa.red <- subset(anacapa, Urchin=="red")
@@ -1191,11 +1267,9 @@ anova3 <- aov(av.total.biomass ~ reserve.status, data=anacapa.red)
 summary(anova3)
 anova4 <- aov(av.total.biomass ~ reserve.status, data=anacapa.purple)
 summary(anova4)
+#signif diff remains for both species
 
-#just use sites 11-13
-head(anacapa.old)
-tail(anacapa.old)
-summary(anacapa.old)
+#just use sites 11-13 (old sites)
 anacapa.red1 <- subset(anacapa.old, Urchin=="red")
 anacapa.purple1 <- subset(anacapa.old, Urchin=="purple")
 anova5 <- aov(av.total.biomass ~ reserve.status, data=anacapa.red1)
@@ -1205,11 +1279,11 @@ summary(anova5)
 #ANCOVA on sites 11,12, and 13
 ancova <- aov(av.total.biomass ~ Year + reserve.status, data=anacapa.red1)
 Anova(ancova, type="III")
-summary(lm(av.total.biomass ~ Year*reserve.status -1, data=anacapa.red1))
-#significant interaction term
+summary(lm(av.total.biomass ~ Year*reserve.status, data=anacapa.red1))
+#not significant interaction term
 fit1 <- aov(av.total.biomass ~ Year*reserve.status, data=anacapa.red1)
 summary(fit1)
-#not significant interaction term
+#not significant interaction term, drop from model
 fit2 <- aov(av.total.biomass ~ Year + reserve.status, data=anacapa.red1)
 summary(fit2)
 anova(fit1,fit2)
@@ -1218,31 +1292,8 @@ anova(fit1,fit2)
 fit3 <- aov(av.total.biomass ~ Year*reserve.status, data=anacapa.purple1)
 summary(fit3)
 #significant interaction term
+#just for demonstration purposes, dropping interaction term:
 fit4 <- aov(av.total.biomass ~ Year+reserve.status, data=anacapa.purple1)
 summary(fit4)
 anova(fit3, fit4)
 #interaction term is significant, significant interaction between reserve status and year
-
-#add in predators to anacapa dataset
-anacapa.all <- subset(all.orgs, IslandCode=="AN")
-summary(anacapa.all)  
-sh1 <- sh1[c(1:3,6:8)]
-head(sh1)
-anacapa.sh <- merge(anacapa, sh1, by=c("Year","site_id"))
-head(anacapa.sh)
-anacapa.preds <-merge(anacapa, predators1, by=c("Year","site_id"))
-head(anacapa.preds)
-head(anacapa)
-
-ggplot(anacapa.old, aes(x=Year, y=av.count.m2, color=Urchin)) +
-  geom_smooth(method='lm') +
-  geom_smooth(data=anacapa.preds, aes(x=Year, y=av.count, col=taxa_id, method="lm")) +
-  geom_smooth(data=anacapa.sh, aes(x=Year, y= av.count, col=taxa_id, method="lm")) +
-  facet_wrap(~site_id) +
-  scale_color_manual(values=c("orange","purple", "blue", "red", "green")) +
-  theme(legend.position = c(.8, .1)) +
-  labs(y="Count m^-2") +
-  scale_shape_discrete(name="Species", breaks=c("lobster", "purple", "pycnopodia", "red", "Semicossyphus pulcher"),
-                       labels=c("lobster", "purple urchin", "sunflower star", "red urchin", "sheephead"))
-
-
